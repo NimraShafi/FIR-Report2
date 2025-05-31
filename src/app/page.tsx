@@ -11,7 +11,7 @@ import { ReportActions } from "@/components/report/ReportActions";
 import { generateFir, type GenerateFirInput } from "@/ai/flows/generate-fir";
 import { translateIncidentReport, type TranslateIncidentReportInput } from "@/ai/flows/translate-incident-report";
 import { useToast } from "@/hooks/use-toast";
-import { Send, Loader2, MessageSquare } from "lucide-react";
+import { Send, Loader2, MessageSquare, FileText } from "lucide-react";
 import { v4 as uuidv4 } from 'uuid';
 
 
