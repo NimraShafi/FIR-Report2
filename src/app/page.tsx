@@ -3,17 +3,27 @@
 import { useState, type FormEvent } from "react";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { LanguageSelector } from "@/components/chat/LanguageSelector";
 import { ReportActions } from "@/components/report/ReportActions";
-import { generateFir, type GenerateFirInput } from "@/ai/flows/generate-fir";
-import { translateIncidentReport, type TranslateIncidentReportInput } from "@/ai/flows/translate-incident-report";
+import { generateFir } from "@/ai/flows/generate-fir";
+import { analyzeIncident } from "@/ai/flows/analyze-incident";
 import { useToast } from "@/hooks/use-toast";
-import { Send, Loader2, MessageSquare, FileText } from "lucide-react";
-import { v4 as uuidv4 } from 'uuid';
-
+import {
+  Send,
+  Loader2,
+  MessageSquare,
+  FileText,
+} from "lucide-react";
+import { v4 as uuidv4 } from "uuid";
 
 interface ChatMessage {
   id: string;
@@ -23,100 +33,200 @@ interface ChatMessage {
 
 export default function HomePage() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [currentMessage, setCurrentMessage] = useState<string>("");
+  const [currentMessage, setCurrentMessage] = useState("");
+
   const [generatedFir, setGeneratedFir] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [selectedLanguage, setSelectedLanguage] = useState<string>("en");
+  const [incidentSummary, setIncidentSummary] = useState<string | null>(null);
+
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+
+  const [isReportReady, setIsReportReady] = useState(false);
+
+  const [selectedLanguage, setSelectedLanguage] = useState("en");
+
   const { toast } = useToast();
 
-  const handleSendMessage = (e: FormEvent) => {
-    e.preventDefault();
-    if (!currentMessage.trim()) return;
-    setChatMessages((prevMessages) => [
-      ...prevMessages,
-      { id: uuidv4(), text: currentMessage, sender: "user" },
-    ]);
-    setCurrentMessage("");
-  };
 
-  const handleGenerateReport = async () => {
-    if (chatMessages.filter(msg => msg.sender === 'user').length === 0) {
-      toast({
-        title: "No Input",
-        description: "Please describe the incident before generating a report.",
-        variant: "destructive",
-      });
+  const handleSendMessage = async (e: FormEvent) => {
+    e.preventDefault();
+
+    if (!currentMessage.trim() || isAnalyzing || isGeneratingReport) {
       return;
     }
 
-    setIsLoading(true);
+    const userMessage = currentMessage.trim();
+
+    const newUserMessage: ChatMessage = {
+      id: uuidv4(),
+      text: userMessage,
+      sender: "user",
+    };
+
+    const updatedMessages = [...chatMessages, newUserMessage];
+
+    setChatMessages(updatedMessages);
+    setCurrentMessage("");
+
+    setIsReportReady(false);
+    setIncidentSummary(null);
+
+    setIsAnalyzing(true);
+
+    try {
+      const chatHistory = updatedMessages
+        .map(
+          (message) =>
+            `${message.sender === "user" ? "User" : "AI"}: ${message.text}`
+        )
+        .join("\n");
+
+      const result = await analyzeIncident({
+        chatHistory,
+        language: selectedLanguage,
+      });
+
+      if (result.assistantMessage) {
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            id: uuidv4(),
+            text: result.assistantMessage,
+            sender: "system",
+          },
+        ]);
+      }
+
+      setIsReportReady(result.readyForReport);
+
+      if (result.readyForReport) {
+        setIncidentSummary(result.incidentSummary || null);
+
+        toast({
+          title: "Information Complete",
+          description:
+            "The AI has enough information to prepare your report.",
+        });
+      }
+    } catch (error) {
+      console.error("AI analysis error:", error);
+
+      toast({
+        title: "Error",
+        description:
+          "Unable to process your message. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+
+  const handleGenerateReport = async () => {
+    if (!isReportReady || isGeneratingReport || isAnalyzing) {
+      return;
+    }
+
+    setIsGeneratingReport(true);
     setGeneratedFir(null);
 
     try {
-      const incidentDescription = chatMessages
-        .filter((msg) => msg.sender === "user")
-        .map((msg) => msg.text)
+      const chatHistory = chatMessages
+        .map(
+          (message) =>
+            `${message.sender === "user" ? "User" : "AI"}: ${message.text}`
+        )
         .join("\n");
 
-      let descriptionForFir = incidentDescription;
+      toast({
+        title: "Generating Report",
+        description:
+          "AI is creating your formal incident report...",
+      });
 
-      if (selectedLanguage !== "en") {
-        toast({ title: "Translating Input", description: `Translating from ${selectedLanguage} to English...` });
-        const translateInput: TranslateIncidentReportInput = {
-          incidentReport: incidentDescription,
-          sourceLanguage: selectedLanguage,
-        };
-        const translationResult = await translateIncidentReport(translateInput);
-        descriptionForFir = translationResult.translatedReport;
-        toast({ title: "Translation Complete", description: "Input translated to English." });
-      }
-      
-      toast({ title: "Generating Report", description: "AI is crafting your formal incident report..." });
-      const firInput: GenerateFirInput = { chatHistory: descriptionForFir };
-      const firOutput = await generateFir(firInput);
-      setGeneratedFir(firOutput.firReport);
-      toast({ title: "Report Generated", description: "Your FIR is ready for review." });
+      const result = await generateFir({
+        chatHistory,
+        language: selectedLanguage,
+      });
 
+      setGeneratedFir(result.firReport);
+
+      toast({
+        title: "Report Generated",
+        description:
+          "Your formal report is ready for review.",
+      });
     } catch (error) {
-      console.error("Error generating report:", error);
+      console.error("Report generation error:", error);
+
       toast({
         title: "Error",
-        description: "Failed to generate report. Please try again.",
+        description:
+          "Failed to generate the report. Please try again.",
         variant: "destructive",
       });
-      setGeneratedFir("An error occurred while generating the report. Please check the console for details and try again.");
     } finally {
-      setIsLoading(false);
+      setIsGeneratingReport(false);
     }
   };
+
+
+  const handleLanguageChange = (value: string) => {
+    setSelectedLanguage(value);
+
+    setIsReportReady(false);
+    setIncidentSummary(null);
+    setGeneratedFir(null);
+  };
+
+  const isBusy = isAnalyzing || isGeneratingReport;
+
 
   return (
     <div className="flex flex-col min-h-screen bg-background">
       <AppHeader />
+
       <main className="flex-grow container mx-auto px-4 py-8">
         <div className="grid lg:grid-cols-2 gap-8">
+
           <Card className="shadow-lg rounded-lg">
             <CardHeader>
-              <CardTitle className="font-headline text-2xl">Describe Your Incident</CardTitle>
+              <CardTitle className="font-headline text-2xl">
+                Describe Your Incident
+              </CardTitle>
+
               <CardDescription>
-                Chat with our AI assistant to create your report. Provide details in
-                English or select your language.
+                Chat with our AI assistant to create your report.
+                Provide details in your selected language.
               </CardDescription>
             </CardHeader>
+
             <CardContent className="space-y-6">
+
+
               <LanguageSelector
                 value={selectedLanguage}
-                onChange={setSelectedLanguage}
-                disabled={isLoading}
+                onChange={handleLanguageChange}
+                disabled={isBusy}
               />
-              <ScrollArea className="h-[300px] border rounded-md p-4 bg-muted/20">
+
+              <ScrollArea className="h-[350px] border rounded-md p-4 bg-muted/20">
+
                 {chatMessages.length === 0 && (
-                  <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
+                  <div className="flex flex-col items-center justify-center h-full text-muted-foreground text-center">
                     <MessageSquare className="w-12 h-12 mb-2" />
-                    <p>Your incident description will appear here.</p>
-                    <p className="text-xs">Type your message below and press Send.</p>
+
+                    <p>
+                      Describe what happened to start the conversation.
+                    </p>
+
+                    <p className="text-xs mt-1">
+                      The AI will ask follow-up questions when needed.
+                    </p>
                   </div>
                 )}
+
                 {chatMessages.map((msg) => (
                   <div
                     key={msg.id}
@@ -126,73 +236,146 @@ export default function HomePage() {
                         : "bg-muted text-muted-foreground mr-auto"
                     }`}
                   >
-                    <p className="text-sm whitespace-pre-wrap">{msg.text}</p>
+                    <p className="text-sm whitespace-pre-wrap">
+                      {msg.text}
+                    </p>
                   </div>
                 ))}
+
+                {isAnalyzing && (
+                  <div className="flex items-center gap-2 text-muted-foreground text-sm mt-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>AI is thinking...</span>
+                  </div>
+                )}
+
               </ScrollArea>
-              <form onSubmit={handleSendMessage} className="space-y-2">
-                <div className="flex gap-2 items-center">
-                  <Input
-                    value={currentMessage}
-                    onChange={(e) => setCurrentMessage(e.target.value)}
-                    placeholder="Type your message..."
-                    disabled={isLoading}
-                    aria-label="Chat message input"
-                  />
-                  <Button type="submit" disabled={isLoading || !currentMessage.trim()} size="icon" aria-label="Send message">
-                    <Send className="h-5 w-5" />
-                  </Button>
-                </div>
-              </form>
-              <Button
-                onClick={handleGenerateReport}
-                disabled={isLoading || chatMessages.filter(msg => msg.sender === 'user').length === 0}
-                className="w-full"
-                size="lg"
+
+              <form
+                onSubmit={handleSendMessage}
+                className="flex gap-2 items-center"
               >
-                {isLoading ? (
-                  <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                ) : null}
-                {isLoading && selectedLanguage !== 'en' && !generatedFir ? 'Translating & Generating...' : isLoading ? 'Generating Report...' : 'Generate Formal Report'}
-              </Button>
+                <Input
+                  value={currentMessage}
+                  onChange={(e) =>
+                    setCurrentMessage(e.target.value)
+                  }
+                  placeholder="Type your message..."
+                  disabled={isBusy}
+                  aria-label="Chat message input"
+                />
+
+                <Button
+                  type="submit"
+                  disabled={
+                    isBusy || !currentMessage.trim()
+                  }
+                  size="icon"
+                  aria-label="Send message"
+                >
+                  {isAnalyzing ? (
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                  ) : (
+                    <Send className="h-5 w-5" />
+                  )}
+                </Button>
+              </form>
+
+              {incidentSummary && isReportReady && (
+                <div className="border rounded-lg p-4 bg-muted/20">
+                  <h3 className="font-semibold mb-2">
+                    Incident Summary
+                  </h3>
+
+                  <p className="text-sm whitespace-pre-wrap">
+                    {incidentSummary}
+                  </p>
+                </div>
+              )}
+
+
+              {isReportReady && (
+                <Button
+                  onClick={handleGenerateReport}
+                  disabled={isBusy}
+                  className="w-full"
+                  size="lg"
+                >
+                  {isGeneratingReport && (
+                    <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                  )}
+
+                  {isGeneratingReport
+                    ? "Generating Report..."
+                    : "Generate Formal Report"}
+                </Button>
+              )}
+
             </CardContent>
           </Card>
 
+
           <Card className="shadow-lg rounded-lg">
             <CardHeader>
-              <CardTitle className="font-headline text-2xl">Formal Incident Report</CardTitle>
+              <CardTitle className="font-headline text-2xl">
+                Formal Incident Report
+              </CardTitle>
+
               <CardDescription>
-                Review your AI-generated report below. You can then download or email it.
+                Review your AI-generated report below.
+                You can then download or email it.
               </CardDescription>
             </CardHeader>
+
             <CardContent>
-              {isLoading && !generatedFir && (
-                 <div className="flex flex-col items-center justify-center h-[400px] text-muted-foreground">
-                    <Loader2 className="w-12 h-12 animate-spin mb-4 text-primary" />
-                    <p className="text-lg font-medium">Generating your report...</p>
-                    <p>This may take a few moments.</p>
-                  </div>
+
+              {isGeneratingReport && !generatedFir && (
+                <div className="flex flex-col items-center justify-center h-[450px] text-muted-foreground border rounded-md p-4 bg-muted/20">
+                  <Loader2 className="w-12 h-12 animate-spin mb-4 text-primary" />
+
+                  <p className="text-lg font-medium">
+                    Generating your report...
+                  </p>
+
+                  <p className="text-sm">
+                    This may take a few moments.
+                  </p>
+                </div>
               )}
-              {generatedFir ? (
+
+              {generatedFir && !isGeneratingReport && (
                 <>
-                  <ScrollArea className="h-[400px] border rounded-md p-4 bg-muted/20">
-                    <pre className="whitespace-pre-wrap text-sm font-code leading-relaxed">
+                  <ScrollArea className="h-[450px] border rounded-md p-4 bg-muted/20">
+                    <pre className="whitespace-pre-wrap text-sm leading-relaxed">
                       {generatedFir}
                     </pre>
                   </ScrollArea>
+
                   <ReportActions reportText={generatedFir} />
                 </>
-              ) : !isLoading && (
-                <div className="flex flex-col items-center justify-center h-[400px] text-muted-foreground border rounded-md p-4 bg-muted/20">
+              )}
+
+              {!generatedFir && !isGeneratingReport && (
+                <div className="flex flex-col items-center justify-center h-[450px] text-muted-foreground border rounded-md p-4 bg-muted/20">
                   <FileText className="w-16 h-16 mb-4 opacity-50" />
-                  <p className="text-lg font-medium">Your report will appear here.</p>
-                  <p className="text-sm">Describe the incident and click "Generate Formal Report".</p>
+
+                  <p className="text-lg font-medium">
+                    Your report will appear here.
+                  </p>
+
+                  <p className="text-sm text-center mt-1">
+                    Complete the AI conversation first,
+                    then generate your formal report.
+                  </p>
                 </div>
               )}
+
             </CardContent>
           </Card>
+
         </div>
       </main>
+
       <footer className="text-center py-4 border-t text-sm text-muted-foreground">
         Reportify AI &copy; {new Date().getFullYear()}
       </footer>
